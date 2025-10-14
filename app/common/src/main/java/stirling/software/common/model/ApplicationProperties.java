@@ -63,6 +63,8 @@ public class ApplicationProperties {
 
     private Premium premium = new Premium();
 
+    private RedactExternalProvider redactExternalProvider = new RedactExternalProvider();
+
     @JsonIgnore // Deprecated - completely hidden from JSON serialization
     private EnterpriseEdition enterpriseEdition = new EnterpriseEdition();
 
@@ -721,5 +723,11 @@ public class ApplicationProperties {
                 return ocrMyPdfTimeoutMinutes > 0 ? ocrMyPdfTimeoutMinutes : 30;
             }
         }
+    }
+
+    @Data
+    public static class RedactExternalProvider {
+        private boolean enabled = false;
+        private String url;
     }
 }

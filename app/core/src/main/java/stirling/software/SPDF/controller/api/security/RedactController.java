@@ -34,14 +34,21 @@ import org.apache.pdfbox.pdmodel.common.PDStream;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.graphics.PDXObject;
 import org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpEntity;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.MultipartBodyBuilder;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import io.github.pixee.security.Filenames;
@@ -60,6 +67,7 @@ import stirling.software.SPDF.pdf.TextFinder;
 import stirling.software.SPDF.utils.text.TextEncodingHelper;
 import stirling.software.SPDF.utils.text.TextFinderUtils;
 import stirling.software.SPDF.utils.text.WidthCalculator;
+import stirling.software.common.model.ApplicationProperties;
 import stirling.software.common.model.api.security.RedactionArea;
 import stirling.software.common.service.CustomPDFDocumentFactory;
 import stirling.software.common.util.GeneralUtils;
@@ -88,6 +96,8 @@ public class RedactController {
 
     private final CustomPDFDocumentFactory pdfDocumentFactory;
 
+    private final ApplicationProperties applicationProperties;
+
     private String removeFileExtension(String filename) {
         return GeneralUtils.removeExtension(filename);
     }
@@ -110,6 +120,20 @@ public class RedactController {
 
         MultipartFile file = request.getFileInput();
         List<RedactionArea> redactionAreas = request.getRedactions();
+
+        if (applicationProperties.getRedactExternalProvider().isEnabled()) {
+            log.info("Redirecting to external service for redaction");
+            byte[] externalServiceResponse = redirectToExternalService(request);
+
+            if (externalServiceResponse != null) {
+                return WebResponseUtils.bytesToWebResponse(
+                        externalServiceResponse,
+                        removeFileExtension(
+                                        Objects.requireNonNull(
+                                                Filenames.toSimpleFileName(file.getOriginalFilename())))
+                                + "_redacted.pdf");
+            }
+        }
 
         try (PDDocument document = pdfDocumentFactory.load(file)) {
             PDPageTree allPages = document.getDocumentCatalog().getPages();
@@ -144,6 +168,40 @@ public class RedactController {
                                     Objects.requireNonNull(
                                             Filenames.toSimpleFileName(file.getOriginalFilename())))
                             + "_redacted.pdf");
+        }
+    }
+
+    private byte[] redirectToExternalService(ManualRedactPdfRequest request) throws IOException {
+        MultipartFile file = request.getFileInput();
+        List<RedactionArea> redactionAreas = request.getRedactions();
+
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        builder.part("fileInput", file.getResource()).header("Content-Type", file.getContentType());
+
+        if (redactionAreas != null) {
+            builder.part("redactions", redactionAreas);
+        }
+        if (request.getPageNumbers() != null) {
+            builder.part("pageNumbers", request.getPageNumbers());
+        }
+
+        MultiValueMap<String, HttpEntity<?>> multipartBody = builder.build();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+        HttpEntity<MultiValueMap<String, HttpEntity<?>>> httpEntity =
+                new HttpEntity<>(multipartBody, headers);
+
+        String externalServiceUrl = applicationProperties.getRedactExternalProvider().getUrl();
+
+        RestTemplate restTemplate = new RestTemplate();
+        ResponseEntity<byte[]> response = restTemplate.exchange(externalServiceUrl, HttpMethod.POST, httpEntity, byte[].class);
+
+        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+            return response.getBody();
+        } else {
+            throw new IOException("Failed to get a valid response from the external service");
         }
     }
 
